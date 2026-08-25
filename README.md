@@ -1,4 +1,4 @@
-# Ness D8x / D16x Monitor
+# Ness D8x / D16x Web Monitor and Command
 
 A small web application that talks to a Ness D8x/D16x alarm panel over its
 RS232 ASCII serial interface (Doc 362S27 Rev 13), keeps a live picture of the
