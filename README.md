@@ -17,7 +17,7 @@ any home automation system, write your own UI, or just `curl` it from a script.
 On the IP232's web interface:
 - Set **Baud rate** to `9600`
 - Set **Data bits** to `8`, **Parity** to `None`, **Stop bits** to `1`
-- Note the **TCP port** (default `4196`) and the module's **IP address**
+- Note the **TCP port** (default `2401`) and the module's **IP address**
 
 ---
 
@@ -41,8 +41,8 @@ module.exports = {
   ...base,
   ip232: {
     ...base.ip232,
-    host: '192.168.1.50',   // ← your IP232's IP
-    port: 4196,
+    host: '10.1.1.125',   // ← your IP232's IP
+    port: 2401,
   },
   panel: {
     ...base.panel,
