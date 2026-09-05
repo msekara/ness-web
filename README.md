@@ -1,169 +1,273 @@
-# Ness D8x / D16x Web Monitor and Command
+# ness-web
 
-A small web application that talks to a Ness D8x/D16x alarm panel over its
-RS232 ASCII serial interface (Doc 362S27 Rev 13), keeps a live picture of the
-system, and lets you send commands from the browser.
+Node.js server that controls a **Ness D8x / D16x** alarm panel via the
+**Ness IP232** serial-over-ethernet module.
+
+Exposes a simple REST + WebSocket API so you can integrate the alarm into
+any home automation system, write your own UI, or just `curl` it from a script.
+
+---
+
+## Hardware setup
 
 ```
- panel  <—RS232/TCP—>  Node server  <—WebSocket—>  browser dashboard
-                       (decode/encode + state cache + polling)
+[Ness D8x/D16x] ←── RS-232 ──→ [IP232 module] ←── TCP/IP ──→ [This server]
 ```
 
-The dashboard shows the overall system state (disarmed / armed / entry delay /
-alarm), a 16-zone LED grid, arming status, alarms & warnings, output states,
-firmware version, a live event log, and the raw serial stream. A keypad and
-command bar let you arm, disarm, send keystrokes, and request specific status
-forms.
+On the IP232's web interface:
+- Set **Baud rate** to `9600`
+- Set **Data bits** to `8`, **Parity** to `None`, **Stop bits** to `1`
+- Note the **TCP port** (default `4196`) and the module's **IP address**
 
-## Requirements
+---
 
-- Node.js 18 or newer.
-- A serial link to the panel — either:
-  - a **serial-to-Ethernet adapter** (e.g. a Ness IP232 or any TCP serial
-    bridge) — recommended, no native modules needed; or
-  - a **local serial port** (USB-RS232 adapter) — needs the optional
-    `serialport` module.
-- On the panel, the ASCII bus must be enabled. Relevant program options
-  (`P199E`): `1E` include address, `2E` include time stamp, `3E` alarms,
-  `4E` warnings, `5E` access events, `6E` zone seal state. Serial is fixed at
-  **9600 8N1**.
+## Installation
 
-## Install & run
+Requires Node.js 18+.
 
 ```bash
+cd ness-web
 npm install
+```
+
+### Configuration
+
+Edit `src/config.js` or copy it to `src/config.local.js` and set your values:
+
+```js
+// src/config.local.js
+const base = require('./config');
+module.exports = {
+  ...base,
+  ip232: {
+    ...base.ip232,
+    host: '192.168.1.50',   // ← your IP232's IP
+    port: 4196,
+  },
+  panel: {
+    ...base.panel,
+    zoneCount: 8,
+    zoneNames: ['Front door', 'Garage', 'Hallway', 'Back yard', 'Lounge', 'Bedroom 1', 'Bedroom 2', 'Laundry'],
+    outputCount: 2,
+  },
+  server: {
+    ...base.server,
+    port: 5555,
+    apiKey: 'my-secret-key',  // optional — leave blank to disable auth
+  },
+};
+```
+
+Or use environment variables (see `.env.example`).
+
+### Start
+
+```bash
 npm start
 ```
 
-Then open http://localhost:3000
-
-### Configuration (environment variables)
-
-| Variable           | Default          | Meaning                                        |
-|--------------------|------------------|------------------------------------------------|
-| `NESS_CONN`        | `tcp`            | `tcp` or `serial`                              |
-| `NESS_HOST`        | `192.168.1.50`   | panel adapter IP (tcp)                         |
-| `NESS_PORT`        | `2401`           | panel adapter TCP port                         |
-| `NESS_SERIAL_PATH` | `/dev/ttyUSB0`   | serial device (serial)                         |
-| `NESS_BAUD`        | `9600`           | baud rate (serial)                             |
-| `NESS_ADDRESS`    | `0`              | panel address nibble (last digit of P73E; 0 is always accepted) |
-| `HTTP_PORT`        | `3000`           | dashboard port                                 |
-| `NESS_ZONES`       | `8`              | zone count (D8x = 8, D16x = 16)                |
-| `POLL_MS`          | `4000`           | full status-refresh interval (`0` disables)    |
-| `ZONE_POLL_MS`     | `800`            | fast zone-refresh interval (`0` disables)      |
-
-Examples:
+For development with auto-restart on file changes:
 
 ```bash
-# TCP adapter
-NESS_HOST=192.168.1.42 NESS_PORT=2401 npm start
-
-# Local USB serial
-NESS_CONN=serial NESS_SERIAL_PATH=/dev/ttyUSB0 npm start
+npm run dev
 ```
 
-## Try it without hardware
+---
 
-A simulated panel is included:
+## REST API
+
+All endpoints return JSON. If `apiKey` is configured, include it as:
+```
+Authorization: Bearer <apiKey>
+```
+
+### GET `/health`
+No auth required. Returns server + connection status.
+
+```json
+{ "ok": true, "connected": true, "uptime": 3600 }
+```
+
+### GET `/state`
+Full alarm state snapshot.
+
+```json
+{
+  "armingState": "DISARMED",
+  "armingMode": null,
+  "zones": {
+    "1": { "unsealed": false, "name": "Front door" },
+    "2": { "unsealed": true,  "name": "Garage" }
+  },
+  "outputs": {
+    "1": { "on": false },
+    "2": { "on": false }
+  },
+  "siren": false,
+  "strobe": false,
+  "panelBattOk": true,
+  "mainsPowerOk": true,
+  "lastUpdated": "2026-09-04T13:30:00.000Z"
+}
+```
+
+`armingState` values:
+| Value | Meaning |
+|---|---|
+| `DISARMED` | Panel disarmed |
+| `ARMING` | Exit delay in progress |
+| `ARMED_AWAY` | Fully armed (away) |
+| `ARMED_HOME` | Home / stay arm |
+| `ARMED_DAY` | Day mode |
+| `ARMED_NIGHT` | Night mode |
+| `ENTRY_DELAY` | Entry delay active |
+| `ALARM` | Alarm triggered |
+
+### POST `/arm/away`
+Arm away. Body (optional): `{ "code": "1234" }`
+
+### POST `/arm/home`
+Arm home / stay. Body (optional): `{ "code": "1234" }`
+
+### POST `/arm/night`
+Arm night. Body (optional): `{ "code": "1234" }`
+
+### POST `/disarm`
+Disarm. Body (required): `{ "code": "1234" }`
+
+### POST `/output/:n/on`
+Activate AUX output `n` (1–8).
+
+### POST `/output/:n/off`
+Deactivate AUX output `n`.
+
+---
+
+## WebSocket API
+
+Connect to `ws://<host>:<port>/ws` (append `?apiKey=<key>` if auth is enabled).
+
+On connection you immediately receive a `state` event with the full current state.
+After that, events are pushed in real time as things change.
+
+### Message format
+
+```json
+{ "event": "<eventName>", "data": { ... } }
+```
+
+### Events
+
+| Event | Data |
+|---|---|
+| `state` | Full state snapshot (sent on connect) |
+| `stateChange` | `{ previous, current, mode }` |
+| `zoneChange` | `{ zone, unsealed, name }` |
+| `outputChange` | `{ output, on }` |
+| `systemEvent` | `{ eventName, zone, area, timestamp }` |
+| `connected` | _(no data)_ |
+| `disconnected` | _(no data)_ |
+
+### JavaScript example
+
+```js
+const ws = new WebSocket('ws://192.168.1.10:5555/ws');
+
+ws.onmessage = (msg) => {
+  const { event, data } = JSON.parse(msg.data);
+
+  if (event === 'stateChange') {
+    console.log(`Alarm → ${data.current}`);
+  }
+  if (event === 'zoneChange') {
+    console.log(`Zone ${data.zone} (${data.name}): ${data.unsealed ? 'OPEN' : 'closed'}`);
+  }
+};
+```
+
+---
+
+## curl examples
 
 ```bash
-npm run sim                                   # terminal 1  (TCP :2401)
-NESS_HOST=127.0.0.1 NESS_PORT=2401 npm start  # terminal 2
+# Get state
+curl http://localhost:5555/state
+
+# Arm away (no code)
+curl -X POST http://localhost:5555/arm/away
+
+# Arm away with code
+curl -X POST http://localhost:5555/arm/away -H 'Content-Type: application/json' -d '{"code":"1234"}'
+
+# Disarm
+curl -X POST http://localhost:5555/disarm -H 'Content-Type: application/json' -d '{"code":"1234"}'
+
+# Turn output 1 on
+curl -X POST http://localhost:5555/output/1/on
+
+# With API key
+curl -H 'Authorization: Bearer my-secret-key' http://localhost:5555/state
 ```
 
-## Model / firmware / view state stay blank
+---
 
-These three fields come **only** from status requests (ID 17 for model +
-firmware, ID 16 for view state) — there's no event that reports them. Zones,
-arming, alarms and outputs also arrive in the event stream, so they can update
-even when status polling isn't answered; the three status-only fields can't.
+## Running as a service (systemd)
 
-If they're blank, the panel isn't returning those forms. Confirm from the
-**Serial / system** tab: pick `17 — Version` in the status dropdown, click
-**Request status**, and see whether any line comes back. Some D8x firmware
-doesn't answer every form. Enabling **`P199E 7E`** makes the panel send a
-periodic version message on its own, which will fill the model/firmware fields
-even if on-demand requests aren't answered.
+```ini
+# /etc/systemd/system/ness-web.service
+[Unit]
+Description=Ness Web Server
+After=network.target
 
-## Zones not reacting when you walk past a sensor?
+[Service]
+Type=simple
+WorkingDirectory=/opt/ness-web
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=10
+Environment=NESS_HOST=192.168.1.50
+Environment=NESS_PORT=4196
+Environment=PORT=5555
+Environment=NESS_API_KEY=my-secret-key
 
-A PIR only *unseals* its zone for a second or two per trip. The dashboard
-reacts to this two ways:
-
-1. **Pushed events (best).** Enable **`P199E 6E`** (Zone Seal State) on the
-   panel so it sends unseal/seal events as they happen. The grid updates the
-   instant an event arrives — no polling lag.
-2. **Fast polling (fallback).** Even without `6E`, the server re-reads zone
-   state every `ZONE_POLL_MS` (default 800 ms) so most trips are still caught.
-   Lower it (e.g. `ZONE_POLL_MS=400`) if brief trips slip through.
-
-If a zone still never changes: check the detector actually unseals the zone
-(some are configured for entry/exit or 24 hr behaviour), confirm the panel
-address, and watch the **Serial / system** tab — every line the panel sends
-appears there, so you can see whether unseal messages are arriving at all.
-
-## Test the protocol library
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-npm test
+sudo systemctl enable --now ness-web
+sudo journalctl -u ness-web -f
 ```
 
-This checks the encoder/decoder against the worked examples in the spec
-(the `S00`→`E9` and `A123E`→`7E` checksums, the FORM 4 zone examples, the
-Duress event with its decimal timestamp, arming/output forms, and version).
+---
 
-## How commands map to the wire
-
-Commands are built exactly as a keypad user would press them, wrapped in the
-input frame `START 0x83 | address | length | CMD 0x60 | data | checksum | ?`:
-
-| Dashboard action | Data sent | Notes                              |
-|------------------|-----------|------------------------------------|
-| Arm Away         | `A<code>E`| Arm key + user code + Enter        |
-| Arm Home         | `H<code>E`| Home/Monitor key + code + Enter    |
-| Disarm           | `<code>E` | user code + Enter                  |
-| Send keys        | `<keys>E` | raw keystrokes                     |
-| Request status   | `S<nn>`   | 2-digit status ID (0–18)           |
-| Panic            | `P`       | keypad panic                       |
-
-Aux outputs follow the keypad convention: `11*`…`44*` turn Aux 1–4 on and
-`11#`…`44#` turn them off (requires `P141E 4E`…`P144E 4E`).
-
-## Notes on the protocol implementation
-
-A couple of things in Rev 13 are worth flagging, since they're handled here:
-
-- **Timestamp fields are decimal, not hex.** In an event message the 6
-  timestamp bytes are read as decimal from their two ASCII characters (so
-  `43` means 43 minutes), while all other fields are hex. This is verified by
-  the spec's own Duress example.
-- **Status responses carry an address even though `START = 0x82`.** The
-  START bit that flags "address included" is clear for `0x82`, yet the
-  documented status message (`82 07 03 60 …`) still contains an address byte.
-  The decoder resolves this by checking which layout yields a valid command
-  byte and the exact message length, so both event and status frames parse
-  correctly.
-- **Received checksums are not enforced.** The spec's output-checksum worked
-  examples don't self-verify cleanly (the decimal timestamp fields make "sum
-  of bytes" ambiguous), so incoming messages are parsed leniently and anything
-  unparseable is shown verbatim in the serial log. Outgoing command checksums
-  *are* computed strictly and match the spec examples — that's the part the
-  panel validates.
-- **Zone seal messages** (`P199E 6E`, the abbreviated `83 02 00 …` form) are
-  logged raw rather than decoded; enable and watch the serial tab if you need
-  them and adjust `lib/protocol.js` to taste.
-
-## Files
+## Project structure
 
 ```
-server.js            panel link (TCP/serial) + WebSocket + static host + polling
-lib/protocol.js      ASCII protocol encode/decode + lookup tables (no deps)
-public/index.html    single-file dashboard (vanilla JS + WebSocket)
-test/protocol.test.js  unit tests against the spec examples
-test/sim-panel.js    fake panel for hardware-free testing
+ness-web/
+├── src/
+│   ├── index.js        Entry point — wires everything together
+│   ├── config.js       Default configuration (edit or override with config.local.js)
+│   ├── protocol.js     Ness ASCII packet encode/decode, checksum, command builders
+│   ├── connection.js   IP232 TCP socket client with auto-reconnect
+│   ├── alarmState.js   State machine — tracks zones, arming state, outputs
+│   ├── client.js       High-level client (connection + state + keepalive)
+│   └── server.js       Express HTTP API + WebSocket server
+├── dashboard.html
+├── .env.example
+├── package.json
+└── README.md
 ```
 
-## Security
+---
 
-This tool has no authentication and can arm/disarm the panel. Run it only on a
-trusted local network, behind your own auth/reverse proxy if exposed.
+## Protocol notes
+
+- Baud rate: 9600, 8N1 (configured on the IP232 side)
+- Command packets use ASCII encoding: `start(1B) + length(1B) + command(1B) + data + checksum(1B) + CRLF`
+- Checksum: two's complement — `(256 - (sum_of_bytes & 0xFF)) % 256`
+- Arm away: `A[code]E` | Arm home: `H[code]E` | Disarm: `[code]E`
+- AUX on: `nn*` | AUX off: `nn#` (where `nn` is the two-digit output number)
+- Status polls: `S00` (zones 1–16), `S14` (arming), `S18` (aux outputs)
+
+Reference: [Ness D8-D16 ASCII Protocol](http://www.nesscorporation.com/Software/Ness_D8-D16_ASCII_protocol_rev13.pdf)
