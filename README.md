@@ -225,8 +225,8 @@ WorkingDirectory=/opt/ness-web
 ExecStart=/usr/bin/node src/index.js
 Restart=on-failure
 RestartSec=10
-Environment=NESS_HOST=192.168.1.50
-Environment=NESS_PORT=4196
+Environment=NESS_HOST=10.1.1.125
+Environment=NESS_PORT=2401
 Environment=PORT=5555
 Environment=NESS_API_KEY=my-secret-key
 
